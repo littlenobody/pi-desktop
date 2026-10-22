@@ -1,17 +1,83 @@
-# Electron 运行时 / 打包产物（体积大，不入库）
-# 注意：Pi Desktop.exe 约 214MB，超过 GitHub 单文件 100MB 限制
+# ============================================================================
+# Pi Desktop — 只提交源码与打包脚本；下面这些都是"可再生成"的文件
+#
+# 入库内容（用于说明哪些该提交）：
+#   README.md  build.ps1  build.sh  package.json  package-lock.json
+#   scripts/*.js                      打包/图标/版本信息脚本
+#   resources/app/package.json
+#   resources/app/main/**             主进程源码
+#   resources/app/renderer/**         界面源码（含 assets/logo.svg、icon.ico、icon.png）
+#   .gitignore
+#
+# 其余（Electron 运行时、依赖、缓存、日志、导出产物）一律忽略。
+# 克隆后准备：npm install            （打包工具依赖 resedit）
+#             cd resources/app && npm i --omit=dev --ignore-scripts
+#             或直接跑 .\build.ps1 / ./build.sh（会自动装依赖）
+# ============================================================================
+
+# ---------- Electron 运行时（由 build.ps1 / build.sh 下载解压生成）----------
+# 主程序约 214 MB，超过 GitHub 单文件 100 MB 限制，必须忽略
 /Pi Desktop.exe
+/electron.exe
 /Pi-desktop.zip
+/PiDesktop-*.zip
+
+# 运行时随附的二进制/数据/许可文件
 /*.dll
 /*.pak
 /*.bin
 /*.dat
 /*.json
+/*.html
 /locales/
+/version
+# Electron 自带的 MIT 许可文本（随运行时分发；本项目的许可见 LICENSE.md）
+/LICENSE
+!package.json
+!package-lock.json
+!/resources/app/**/*.json
 
-# 运行日志 / 本地配置
+# Windows / macOS / Linux 的杂项产物
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+*.lnk
+*.pdb
+*.dmp
+/crashpad/
+/resources/default_app.asar
+/resources/app.asar
+/resources/electron.asar
+
+# ---------- 依赖目录 ----------
+/node_modules/
+/resources/app/node_modules/
+
+# ---------- 打包缓存与中间产物 ----------
+/.build/
+/dist/
+/out/
+/tmp/
+*.tmp
+*.bak
+
+# ---------- 日志与调试输出 ----------
 /log/
+/logs/
 *.log
+pi-debug.log
 
-# 依赖目录（按 package.json 安装即可）
-resources/app/node_modules/
+# ---------- 本地环境 / 编辑器配置（各人不同，不入库）----------
+.env
+.env.*
+!.env.example
+/.vscode/*
+!/.vscode/extensions.json
+/.idea/
+*.swp
+*~
+
+# ---------- 用户数据（不该出现在仓库里的运行期文件）----------
+/resources/app/config.json
+/resources/app/*.jsonl

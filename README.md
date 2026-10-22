@@ -39,7 +39,11 @@ D:\tools\Pi-desktop\
 ├─ package.json               ← 只放打包工具依赖（resedit）
 ├─ node_modules\             ← 打包工具依赖（可删，重新打包时会自动装）
 ├─ .build\                   ← Electron 运行时下载缓存（可删，删了下次重新下载）
-└─ scripts\brand.js          ← 给 exe 写图标与版本信息（resedit）
+├─ LICENSE.md                ← 本项目许可（MIT）
+├─ .gitignore                ← 只提交源码与脚本，运行时/依赖/缓存不入库
+└─ scripts\
+   ├─ brand.js               ← 给 exe 写图标与版本信息（resedit）
+   └─ make-icons.js          ← 由 logo.svg 生成 icon.png / icon.ico（需用 Electron 运行）
 ```
 
 用户数据：`%APPDATA%\Pi Desktop\config.json`（窗口位置、主题、最近打开的文件夹、布局）。
@@ -144,15 +148,58 @@ Compress-Archive -Path "D:\tools\Pi-desktop\*" -DestinationPath D:\PiDesktop-1.0
 
 或按 electron-builder 文档把 `resources\app` 作为 `files` 输入、把 `build.ps1` 的步骤 3~5 交给它完成。
 
+### 6. 图标是怎么来的（可选）
+
+`resources/app/assets/icon.ico`（多尺寸）和 `icon.png` 由 `renderer/assets/logo.svg` 生成，脚本已经入库，一般不需要重跑：
+
+```bash
+# 用任意 Electron 二进制把脚本当 Electron 应用执行（Windows 示例）
+"D:\tools\Pi-desktop\Pi Desktop.exe" ..\scripts\make-icons.js
+# WSL/Linux：./electron scripts/make-icons.js
+```
+
+### 7. git 仓库与版本管理
+
+本目录可以直接用 git 管理。`.gitignore` 的原则是**只提交源码与脚本**：
+
+| 入库 | 说明 |
+|---|---|
+| `README.md`、`build.ps1`、`build.sh`、`package.json`、`.gitignore`、`LICENSE.md` | 文档与打包脚本 |
+| `scripts/*.js` | 打包（图标、版本信息）脚本 |
+| `resources/app/package.json`、`resources/app/main/**`、`resources/app/renderer/**` | 应用源码；`renderer/assets/` 里的 `logo.svg`、`icon.ico`、`icon.png` 也入库（图标是打包的输入） |
+
+| 忽略（可再生成 / 体积过大 / 本地环境） | 原因 |
+|---|---|
+| `Pi Desktop.exe`、`*.dll`、`*.pak`、`*.bin`、`*.dat`、`locales/`、`LICENSES.chromium.html`、`version` | Electron 运行时，由 `build.ps1` / `build.sh` 下载解压生成；主程序 214 MB 超过 GitHub 单文件限制 |
+| `node_modules/`、`resources/app/node_modules/` | 依赖，按 `package.json` 安装 |
+| `.build/`、`dist/`、`out/`、`*.zip` | 打包缓存与分发产物 |
+| `log/`、`*.log`、`*~`、`.DS_Store`、`Thumbs.db` | 日志与系统杂项 |
+| `.env*`、`.vscode/`、`.idea/` | 本地环境与编辑器配置 |
+
+克隆到新机器后的准备：
+
+```powershell
+git clone <repo> Pi-desktop
+cd Pi-desktop
+npm install                                   # 打包工具依赖（resedit）
+cd resourcespp; npm install --omit=dev --ignore-scripts; cd ..\..
+powershell -ExecutionPolicy Bypass -File .uild.ps1   # 或直接跑这行，它会自动装依赖并组装 exe
+```
+
+> 已经误提交过的运行时文件，用 `git rm -r --cached <路径>` 从索引移除（磁盘文件保留），
+> 之后 `.gitignore` 才会对它们生效。本仓库的 `node_modules`、`LICENSE`、`LICENSES.chromium.html`、`version` 已按此处理。
+
 ---
 
 ## 三、怎么用
 
-首次启动后：
+首次启动（还没有任何记录时会显示欢迎页）：
 
-1. 点 **打开文件夹**（`Ctrl+O`）选择项目目录（也可以用 `Pi Desktop.exe D:\your\project` 直接带目录启动，或把文件夹拖进窗口）；
+1. 点 **打开文件夹**（`Ctrl+O`）选择项目目录（也可以用 `Pi Desktop.exe D:\your\project` 直接带目录启动，或把文件夹拖到窗口/图标上）；
 2. 右边聊天面板会自动起一个 `pi` 进程，输入需求回车即可；
 3. 右下角显示当前模型、上下文占用、累计 token/费用。
+
+之后每次启动会自动恢复**上次打开的文件夹、编辑器标签、聊天会话和面板布局**（按文件夹记忆，保存在 `%APPDATA%\Pi Desktop\config.json`）。关窗口会终止该窗口里所有 pi 进程，但会话已落盘，下次从「会话」历史或恢复的标签里继续即可。
 
 ### 3.1 界面布局
 
