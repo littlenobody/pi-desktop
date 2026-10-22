@@ -662,7 +662,7 @@ const COMMANDS = [
   { id: 'view.zoomOut', label: '缩小', category: '视图', keys: 'mod+-', run: () => api.invoke('window:zoom', -0.5) },
   { id: 'view.zoomReset', label: '重置缩放', category: '视图', keys: 'mod+0', run: () => api.invoke('window:zoom', 0) },
   { id: 'view.devtools', label: '切换开发者工具', category: '视图', keys: 'mod+shift+i', run: () => api.invoke('devtools') },
-  { id: 'view.reload', label: '重新加载窗口', category: '视图', run: () => location.reload() },
+  { id: 'view.reload', label: '重新加载窗口', category: '视图', keys: 'mod+shift+r', run: () => location.reload() },
   // terminal
   { id: 'terminal.new', label: '新建终端', category: '终端', keys: 'mod+shift+`', run: (wb) => wb.terminal.newTerminal() },
   { id: 'terminal.output', label: '显示 pi 进程日志', category: '终端', run: (wb) => wb.terminal.showOutput(wb.chat.current) },

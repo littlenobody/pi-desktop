@@ -1,280 +1,316 @@
 # Pi Desktop
 
-`pi coding agent` 的桌面客户端（Electron）：把 pi 的 RPC 会话、代码编辑器（Monaco）、文件资源管理器、终端（xterm + node-pty）和 Git 集成放进一个类 VS Code 的工作台里。
+把 pi coding agent（`@earendil-works/pi-coding-agent`）封装成 Cursor 风格的桌面客户端：左边文件树 / 搜索 / Git，中间 Monaco 编辑器 + 集成终端，右边是 AI 聊天面板，**每个聊天标签都是一个独立的 `pi` 进程**，可以同时跑多个会话。
 
-- 应用标识：`Pi Desktop`（AppUserModelID `dev.pi.desktop`）
-- 应用版本：`1.0.0`
-- Electron 运行时：`41.10.7`（见根目录 `version` 文件）
-- 许可证：MIT
-
----
-
-## 1. 本仓库包含什么
-
-本仓库入库的是**已打包产物中的源码部分**，即 `resources/app`，以及许可证文件：
-
-```
-LICENSE                     # MIT
-LICENSES.chromium.html      # Chromium/Electron 附带许可证
-resources/app/              # ★ 应用源码（打包时被放进 Electron 的 resources/app）
-├── package.json            # name: pi-desktop, productName: Pi Desktop, version: 1.0.0
-├── package-lock.json
-├── main/                   # 主进程
-│   ├── main.js             # 窗口/协议/菜单/IPC 入口
-│   ├── config.js           # 用户配置（存于 Electron userData/config.json）
-│   ├── pi-env.js           # 定位 pi CLI 与 Node 运行时、读写 ~/.pi/agent
-│   ├── pi-session.js       # 每个会话 = 一个 `pi --mode rpc` 子进程
-│   ├── desktop-extension.js# 以 `-e` 注入 pi 的桥接扩展（/__desktop 命令）
-│   ├── terminal.js         # node-pty 终端管理
-│   ├── workspace.js        # 文件读写/监听
-│   ├── sessions.js         # 会话文件索引
-│   ├── git.js              # git status/diff/stage/commit 等
-│   └── preload.js          # 渲染进程安全桥
-├── renderer/               # 渲染进程（无打包器，原生 ESM + CSS）
-│   ├── index.html
-│   ├── js/{app,chat,composer,editor,sidebar,terminal,workbench,settings,markdown,session,ui,util,chat-render}.js
-│   └── styles/{base,chat,workbench}.css
-└── assets/{icon.ico,icon.png}
-```
-
-**未入库**（见 `.gitignore`）：Electron 运行时本体（`Pi Desktop.exe` 214MB、`*.dll`、`*.pak`、`locales/` …）、`Pi-desktop.zip`、`resources/app/node_modules/`、`log/`。这些都可由下面的打包步骤重新生成。
+- 直接使用：双击本目录下的 **`Pi Desktop.exe`**
+- 从源码重新打包：见 [第二节](#二从源码打包成-exe)
+- 使用说明：见 [第三节](#三怎么用)
 
 ---
 
-## 2. 直接运行（使用已打包版本）
+## 一、目录结构
 
-1. 解压 `Pi-desktop.zip`（或整个目录）到任意位置，保持目录结构不变。
-2. 双击 `Pi Desktop.exe`。
-   - 也可以把文件夹拖到 exe 上，或用命令行 `Pi Desktop.exe D:\my\project` 直接打开某个工作目录。
-   - 单实例运行：再次启动只会在已有进程中打开新窗口。
-3. 前置依赖：本机需要 **pi CLI** ——
-   ```bash
-   npm install -g @earendil-works/pi-coding-agent
-   ```
-   应用会按以下顺序查找 pi（找不到会提示）：
-   `设置里的 pi 路径` → 环境变量 `PI_DESKTOP_PI_CLI` → `%APPDATA%\npm\node_modules\@earendil-works\pi-coding-agent` → `npm root -g`。
-4. 需要 **Node ≥ 22.19**（pi 的要求）。若系统没有合格 Node，应用会退回 Electron 自带的 Node（`ELECTRON_RUN_AS_NODE=1`）；建议在「设置 → 运行时」里指定系统 Node，以免 Agent 派生的子进程继承该环境变量。
-5. 首次使用在 AI 面板里执行 `/login`（或菜单 **Pi → 登录提供商**）完成提供商认证。
+```
+D:\tools\Pi-desktop\
+├─ Pi Desktop.exe            ← 双击启动（Electron 41.10.7 · Chromium 146 · Node 24.18）
+├─ *.dll, locales\, *.pak …  ← Electron 运行时，别删
+├─ resources\app\            ← 应用本体（源码 + 依赖）
+│  ├─ package.json
+│  ├─ main\                  ← Electron 主进程（Node 侧）
+│  │  ├─ main.js             窗口、菜单、IPC、pidesk:// 协议、自测钩子
+│  │  ├─ preload.js          contextBridge 暴露给渲染进程的 API
+│  │  ├─ config.js           桌面端配置（%APPDATA%\Pi Desktop\config.json）
+│  │  ├─ pi-env.js           定位 pi CLI / Node / Git / agent 目录 / 信任状态
+│  │  ├─ pi-session.js       一个聊天标签 = 一个 `pi --mode rpc` 子进程 + JSONL 协议 + 文件改动追踪
+│  │  ├─ desktop-extension.js 注入 pi 的桥接扩展（/tree 跳转、标签、工具开关、工具调用确认）
+│  │  ├─ workspace.js        文件树/读写/搜索(ripgrep)/文件监听
+│  │  ├─ git.js              源代码管理（status/stage/commit/diff/分支）
+│  │  ├─ sessions.js         历史会话（读 ~/.pi/agent/sessions/**/*.jsonl）
+│  │  └─ terminal.js         集成终端（node-pty + ConPTY，失败时降级为管道）
+│  ├─ renderer\              ← 界面（原生 ES Module，无构建步骤）
+│  │  ├─ index.html
+│  │  ├─ styles\             base.css / workbench.css / chat.css
+│  │  ├─ js\                 app / workbench / editor / chat / chat-render / composer
+│  │  │                      sidebar / terminal / settings / session / markdown / ui / util
+│  │  └─ assets\logo.svg, icon.ico, icon.png
+│  └─ node_modules\          仅运行期依赖：monaco-editor、xterm、node-pty、marked、dompurify、codicons
+├─ build.ps1                 ← Windows 一键重新打包
+├─ build.sh                  ← WSL/Linux/macOS 侧重新打包
+├─ package.json               ← 只放打包工具依赖（resedit）
+├─ node_modules\             ← 打包工具依赖（可删，重新打包时会自动装）
+├─ .build\                   ← Electron 运行时下载缓存（可删，删了下次重新下载）
+└─ scripts\brand.js          ← 给 exe 写图标与版本信息（resedit）
+```
+
+用户数据：`%APPDATA%\Pi Desktop\config.json`（窗口位置、主题、最近打开的文件夹、布局）。
+pi 自己的数据仍在 `%USERPROFILE%\.pi\agent\`（`settings.json`、`models.json`、`auth.json`、`sessions\`、`trust.json`），**和命令行版 pi 完全共用**。
 
 ---
 
-## 3. 使用说明
+## 二、从源码打包成 exe
 
-### 3.1 工作台布局
+原理：Electron 应用 = 「Electron 运行时」+「resources\app 目录」。本目录就是这么组装出来的，所以打包脚本做的事很朴素 —— **下载 Electron → 把 app 目录放进去 → 改名 + 写图标/版本号**。
 
-| 区域 | 内容 |
-| --- | --- |
-| 左侧栏 | 资源管理器、搜索、源代码管理（Git）、会话历史 |
-| 中间 | Monaco 编辑器（多标签、diff 视图） |
-| 下方面板 | 终端（PowerShell / cmd / Git Bash / WSL 等） |
-| 右侧 AI 面板 | pi 会话；会话与文件夹绑定，可多标签并行 |
+### 0. 前置条件
 
-- **打开文件夹**：`Ctrl+O`，或欢迎页「打开文件夹」。最近打开的文件夹会在下次启动时自动恢复（多窗口）。
-- **AI 会话**：`Ctrl+N` 新建聊天（在同一工作目录下新建 pi 会话），可在会话树里切换分支、查看工具调用、审阅/回退文件改动。
-- **文件改动审阅**：Agent 修改文件时会记录基线，可在面板里逐文件查看 diff 并回退。
-- **终端**：`Ctrl+J` 切换面板，`Ctrl+Shift+反引号(\`)` 新建终端；可多终端切换。
-- **Git**：状态栏/侧栏显示变更，支持暂存、取消暂存、丢弃、提交、切换/新建分支、查看 staged diff。
+| 依赖 | 要求 | 说明 |
+|---|---|---|
+| Node.js | **≥ 22.19**（当前机器 22.20 ✔） | pi 本身要求；桌面端会自动选用系统 Node，找不到才回退到 Electron 内置 Node |
+| pi CLI | `npm install -g @earendil-works/pi-coding-agent` | 桌面端通过 `%APPDATA%\npm\node_modules\...` 或 `npm root -g` 自动定位 |
+| Git（可选） | `git.exe` 在 PATH 上 | 源代码管理功能需要；Windows 下 pi 的 `bash` 工具还需要 `bash.exe`（脚本会自动把 `D:\tools\Git\bin` 之类目录补进子进程 PATH） |
 
-### 3.2 快捷键（Windows / Linux 用 `Ctrl`，macOS 用 `Cmd`）
+### 1. 一键打包（Windows，推荐）
 
-| 快捷键 | 功能 |
-| --- | --- |
-| `Ctrl+N` / `Ctrl+Shift+N` | 新建聊天 / 新建窗口 |
-| `Ctrl+O` | 打开文件夹 |
-| `Ctrl+S` | 保存（`文件 → 全部保存` 保存全部） |
-| `Ctrl+,` | 设置 |
-| `Ctrl+W` | 关闭当前编辑器 |
-| `Ctrl+P` / `Ctrl+Shift+P` | 转到文件 / 命令面板 |
-| `Ctrl+Shift+F` | 在文件中查找 |
-| `Ctrl+Shift+E` / `Ctrl+Shift+G` | 资源管理器 / 源代码管理 |
-| `Ctrl+B` | 切换侧边栏 |
-| `Ctrl+Alt+B` | 切换 AI 面板 |
-| `Ctrl+J` | 切换终端面板 |
-| `Ctrl+Shift+反引号(\`)` | 新建终端 |
-| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | 放大 / 缩小 / 重置缩放 |
-| `F2` / `Delete` / `Ctrl+C` `Ctrl+X` `Ctrl+V` | 资源管理器内：重命名 / 删除 / 复制 剪切 粘贴路径 |
-
-输入框内：
-
-| 快捷键 | 功能 |
-| --- | --- |
-| `Enter` | 发送（`设置 → 发送快捷键` 可改为 `Ctrl+Enter` 发送） |
-| `Shift+Enter` | 换行 |
-| `Alt+Enter` | 作为 follow-up 追加发送 |
-| `Ctrl+L` | 选择模型 |
-| `Ctrl+.` | 切换模式 |
-| `Shift+Tab` | 循环思考强度 |
-| `Alt+↑` | 恢复队列中的消息 |
-| `↑` / `↓` | 历史输入 |
-| `Esc` | 取消当前生成 / 关闭弹层 |
-
-### 3.3 AI 面板常用命令
-
-`/tree`（会话树）、`/fork`（分叉）、`/clone`、`/compact`（压缩上下文）、`/session`（会话信息）、`/reload`（重载扩展/技能/模板）、`/login`，以及「导出 HTML / JSONL」、「导入会话 (JSONL)」。
-
-### 3.4 设置项
-
-「设置」中可调：主题（深/浅）、界面/编辑器/对话字号、发送快捷键、自动保存、完成通知、显示思考过程、自动换行、minimap、默认 shell，以及 `pi CLI 路径` / `Node 路径`。
-
-配置文件位置：`%APPDATA%\Pi Desktop\config.json`（macOS/Linux 对应 Electron 的 userData 目录）。
-
----
-
-## 4. 如何编译打包出 `Pi Desktop.exe`
-
-### 4.1 产物结构（当前分发包的实际形态）
-
-这是 **Electron 的「未压缩目录」式分发**，而不是安装包：
-
-```
-Pi Desktop.exe          # Electron 主程序，改名为产品名 + 自定义图标 + 改写版本资源
-chrome_*.pak
-d3dcompiler_47.dll dxcompiler.dll dxil.dll ffmpeg.dll icudtl.dat
-libEGL.dll libGLESv2.dll resources.pak snapshot_blob.bin v8_context_snapshot.bin
-vk_swiftshader.dll vk_swiftshader_icd.json vulkan-1.dll
-locales/                # Chromium 语言包
-version                 # "41.10.7" —— Electron 版本
-resources/app/          # ★ 应用源码目录（注意：不是 app.asar）
-LICENSE LICENSES.chromium.html
-```
-
-已确认的关键事实（决定了打包参数）：
-
-1. `resources/app` 是**目录**而非 `app.asar` → 打包时关闭了 asar。
-2. `Pi Desktop.exe` 的 PE 版本资源已被改写为：
-   `CompanyName / ProductName / FileDescription / InternalName = "Pi Desktop"`，
-   `FileVersion / ProductVersion = 1.0.0.0`，
-   `OriginalFilename = "Pi Desktop.exe"`，`LegalCopyright = "MIT"`。
-   即打包后额外用 rcedit 一类工具写入了产品名、版本、版权和 `assets/icon.ico` 图标（Electron 默认的 Electron 元数据已被替换）。
-3. `resources/app/node_modules` 只保留**生产依赖**：`@vscode/codicons`、`@xterm/xterm`、`@xterm/addon-fit`、`dompurify`、`marked`、`monaco-editor`、`node-pty`。
-4. `node-pty@1.1.0` 用的是 `prebuilds/win32-x64/`（`conpty.node`、`pty.node`、`winpty-agent.exe` 等），**目录下没有 `build/Release`** → 打包时没有执行 `electron-rebuild` / 本地编译，直接使用随包预编译二进制（因此打包机无需 MSVC / Python）。
-5. 渲染进程通过自定义协议 `pidesk://app/` 直接从 `resources/app` 目录读取 `renderer/` 与 `node_modules` 静态资源 —— 这也是必须保持目录结构、不能把整个 app 压成单文件的原因之一。
-6. `Pi-desktop.zip` 就是上述目录树的压缩包，用于分发。
-
-> 说明：仓库里没有提交打包脚本/构建配置（`package.json` 中也没有 devDependencies 与打包器配置），上面的事实是从产物反推的。下面给出两条可完全复现该目录结构的做法。
-
-### 4.2 方式一：electron-packager（最贴近当前产物，推荐）
-
-```bash
-# 0) 准备源码目录（把仓库里的 resources/app 拷出来当项目根）
-mkdir pi-desktop-src && cd pi-desktop-src
-cp -r ../Pi-desktop/resources/app/* .        # Windows: xcopy /E /I ..\Pi-desktop\resources\app .
-
-# 1) 安装生产依赖（在源码目录，node_modules 会被打进包里）
-npm install --omit=dev
-
-# 2) 打包：Electron 41.10.7 + win32-x64 + 关闭 asar + 自定义图标/元数据
-npx --yes electron-packager@19 . "Pi Desktop" \
-  --platform=win32 --arch=x64 \
-  --electron-version=41.10.7 \
-  --icon=assets/icon.ico \
-  --app-version=1.0.0 \
-  --app-copyright=MIT \
-  --win32metadata.CompanyName="Pi Desktop" \
-  --win32metadata.ProductName="Pi Desktop" \
-  --win32metadata.FileDescription="Pi Desktop" \
-  --win32metadata.InternalName="Pi Desktop" \
-  --asar=false \
-  --prune=true \
-  --overwrite \
-  --out=dist
-
-# 产物：dist/Pi Desktop-win32-x64/
-#   Pi Desktop.exe + *.dll + locales/ + resources/app/ …（正好是当前目录结构）
-```
-
-要点：
-- `--asar=false`：必须。否则会生成 `resources/app.asar`，与当前产物不一致（且 `pidesk://` 协议按目录读取，node-pty 的 `.node` 也得 unpack）。
-- `--electron-version=41.10.7`：与根目录 `version` 文件一致。
-- `--icon=assets/icon.ico` + `--win32metadata.*` / `--app-version` / `--app-copyright`：对应 4.1 第 2 点里被改写的 PE 资源。
-- `--prune=true`：剔除 devDependencies，保证 `node_modules` 只有那 7 个生产包。
-- 无需 `electron-rebuild`：node-pty 走 `prebuilds/win32-x64`。
-- 若要跨架构：`--arch=arm64` 同样可用（node-pty 需自带对应 prebuild）。
-
-### 4.3 方式二：electron-builder（也可，注意 asar）
-
-在源码目录加 `package.json` 的 `build` 段：
-
-```json
-{
-  "build": {
-    "appId": "dev.pi.desktop",
-    "productName": "Pi Desktop",
-    "asar": false,
-    "directories": { "output": "dist" },
-    "win": {
-      "target": ["dir"],
-      "icon": "assets/icon.ico"
-    },
-    "copyright": "MIT"
-  }
-}
-```
-
-```bash
-npm install --omit=dev
-npx --yes electron-builder@25 --win --x64
-# 产物：dist/win-unpacked/（Pi Desktop.exe + resources/app/…）
-```
-
-- `"target": ["dir"]` 出未压缩目录；要安装包可换成 `nsis`/`portable`（此时产物结构与仓库里的 zip 不同）。
-- 必须 `"asar": false` 才能得到 `resources/app` 目录；若要开 asar，则需 `"asarUnpack": ["**/node_modules/node-pty/**"]`。
-- electron-builder 会自行写入 exe 版本资源（`LegalCopyright` 取 `copyright`）。
-
-### 4.4 方式三：纯手工组装（不依赖打包器）
-
-```bash
-# 1) 下载 Electron 41.10.7 的 win32-x64 发行包并解压
-#    https://github.com/electron/electron/releases/tag/v41.10.7 → electron-v41.10.7-win32-x64.zip
-
-# 2) 放进应用：electron.exe 同级创建 resources/app，把源码拷进去
-#    并安装生产依赖（也可直接把已构建好的 node_modules 一起拷入）
-npm install --omit=dev --prefix resources/app
-
-# 3) 改名 + 改图标 + 改版本资源（rcedit）
-npm i -g rcedit
-rcedit electron.exe --set-icon assets/icon.ico
-rcedit electron.exe \
-  --set-version-string "ProductName" "Pi Desktop" \
-  --set-version-string "CompanyName" "Pi Desktop" \
-  --set-version-string "FileDescription" "Pi Desktop" \
-  --set-version-string "InternalName" "Pi Desktop" \
-  --set-version-string "OriginalFilename" "Pi Desktop.exe" \
-  --set-version-string "LegalCopyright" "MIT" \
-  --set-file-version "1.0.0.0" --set-product-version "1.0.0.0"
-mv electron.exe "Pi Desktop.exe"
-```
-
-这种方式与 electron-packager 的结果基本等价（差别仅在 `version` 文件与 locales 的裁剪）。
-
-### 4.5 发布 zip
+在 `D:\tools\Pi-desktop` 下执行：
 
 ```powershell
-# PowerShell：进入 dist\Pi Desktop-win32-x64 的上级目录
-Compress-Archive -Path "dist\Pi Desktop-win32-x64\*" -DestinationPath "Pi-desktop.zip" -CompressionLevel Optimal
+# 就地打包（覆盖当前目录里的运行时与 resources\app，产出仍是双击即用的 Pi Desktop.exe）
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+
+# 打到别的目录
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -OutDir D:\PiDesktop
+
+# 依赖目录损坏时，先删 node_modules 重装
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Clean
+
+# 换 Electron 版本 / 换镜像
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -ElectronVersion 41.10.7 -Mirror https://cdn.npmmirror.com/binaries/electron
 ```
 
-（macOS/Linux 交叉打包可用 `zip -r -9 Pi-desktop.zip "Pi Desktop-win32-x64"`。注意 GitHub Releases 单文件上限 2GB，仓库本身不入库 exe。）
+脚本步骤（`build.ps1`）：
 
-### 4.6 改版本号 / 图标 / 名称时要动的地方
+1. 检查 Node；
+2. `resources\app` 缺依赖时执行 `npm install --omit=dev --ignore-scripts --registry=https://registry.npmmirror.com`（`--ignore-scripts` 避免 node-pty 触发 node-gyp 编译，官方 tarball 自带 Windows 预编译产物）；
+3. 下载 `electron-v41.10.7-win32-x64.zip` 到 `.build\` 并解压（国内走 npmmirror CDN，约 137 MB，只下一次）；
+4. 把运行时复制到输出目录 → `electron.exe` 改名 `Pi Desktop.exe` → 删除 `resources\default_app.asar` → 放入 `resources\app`；
+5. 用 `resedit` 往 exe 里写图标（16/24/32/48/64/128/256）和版本信息（产品名 `Pi Desktop`、版本号），这样任务管理器 / 文件属性里显示正常，而不是 “Electron”。
 
-| 想改什么 | 位置 |
-| --- | --- |
-| 应用版本 / 名称 / 描述 | `resources/app/package.json`（`version`、`productName`、`description`），打包时同步 `--app-version` |
-| 窗口标题、任务栏分组 | `main/main.js`：`app.setName('Pi Desktop')`、`app.setAppUserModelId('dev.pi.desktop')` |
-| 图标 | `assets/icon.ico`（Windows）、`assets/icon.png` |
-| Electron 版本 | 根目录 `version` 文件 + 打包参数 `--electron-version` |
-| 版权信息 | 打包参数 `--app-copyright` / `copyright` |
+### 2. 一键打包（WSL / Linux / macOS 侧）
+
+```bash
+cd /mnt/d/tools/Pi-desktop
+chmod +x build.sh
+
+./build.sh                      # 就地打包 Windows x64（默认），产出 Pi Desktop.exe
+./build.sh win32 /mnt/d/PiDesk  # 指定平台与输出目录
+PLATFORM=linux ./build.sh       # 产出 Linux 版（方便在 WSL 里自测界面）
+```
+
+> 说明：`build.sh` 只清理**输出副本**里 node-pty 的多余平台预编译文件，不会动源码目录。
+> 若做非 Windows 目标的包，node-pty 需要对应平台预编译文件（`npm rebuild node-pty`），脚本会给出提示。
+
+### 3. 手工打包（不用脚本）
+
+```powershell
+# 1) 装 app 依赖
+cd D:\tools\Pi-desktop\resources\app
+npm install --omit=dev --ignore-scripts --registry=https://registry.npmmirror.com
+
+# 2) 下 Electron 运行时
+curl.exe -L -o D:\tmp\electron.zip https://cdn.npmmirror.com/binaries/electron/41.10.7/electron-v41.10.7-win32-x64.zip
+Expand-Archive D:\tmp\electron.zip -DestinationPath D:\tmp\electron -Force
+
+# 3) 组装
+Copy-Item D:\tmp\electron\* D:\tools\Pi-desktop\ -Recurse -Force
+Rename-Item D:\tools\Pi-desktop\electron.exe "Pi Desktop.exe"
+Remove-Item D:\tools\Pi-desktop\resources\default_app.asar
+
+# 4) 图标 + 版本号（可选）
+cd D:\tools\Pi-desktop
+npm install --no-save resedit
+node scripts\brand.js "D:\tools\Pi-desktop\Pi Desktop.exe"
+```
+
+### 4. 改了源码之后怎么生效
+
+`resources\app` 是**未打包的明文目录**，改完直接重启客户端即可（`Ctrl+Shift+R` 也能重载窗口，主进程改动需退出重开）：
+
+| 改了什么 | 操作 |
+|---|---|
+| `renderer\**`（界面、样式） | 重启客户端，或按 `Ctrl+Shift+R` 重载窗口 |
+| `main\**`（主进程、IPC、pi 通信） | 退出客户端再打开 |
+| 新增 npm 依赖 | 在 `resources\app` 里 `npm install`，然后按需重跑 `build.ps1` |
+
+调试：设置环境变量 `PI_DESKTOP_DEVTOOLS=1` 后启动，会打开开发者工具；`Ctrl+Shift+I` 也可手动打开。
+
+### 5. 如果用 electron-builder 之类工具想做成安装包
+
+本项目**没有**引入打包工具链（保持零构建、可直接改源码）。若你需要 `.exe` 安装器或单文件绿色版，可在现有目录基础上：
+
+```powershell
+# 目录即绿色版：直接压缩分发
+Compress-Archive -Path "D:\tools\Pi-desktop\*" -DestinationPath D:\PiDesktop-1.0.0-win-x64.zip
+```
+
+或按 electron-builder 文档把 `resources\app` 作为 `files` 输入、把 `build.ps1` 的步骤 3~5 交给它完成。
 
 ---
 
-## 5. 故障排查
+## 三、怎么用
+
+首次启动后：
+
+1. 点 **打开文件夹**（`Ctrl+O`）选择项目目录（也可以用 `Pi Desktop.exe D:\your\project` 直接带目录启动，或把文件夹拖进窗口）；
+2. 右边聊天面板会自动起一个 `pi` 进程，输入需求回车即可；
+3. 右下角显示当前模型、上下文占用、累计 token/费用。
+
+### 3.1 界面布局
+
+```
+┌───────────────── 标题栏：文件 编辑 查看 Agent 终端 帮助 ────────────────┐
+│ 活动栏 │ 侧边栏        │ 编辑器区（标签页）            │ AI 聊天面板   │
+│ 文件   │ 资源管理器    │ 面包屑 / Monaco / 差异对比    │ 会话标签      │
+│ 搜索   │ 搜索          │                              │ 消息流        │
+│ Git    │ 源代码管理    │                              │ 改动审阅条    │
+│ 会话   │ 会话历史      │                              │ 输入框        │
+│ 聊天   │               ├──── 终端面板（Ctrl+J）────────┤               │
+└────────┴───────────────┴──────────────────────────────┴───────────────┘
+   状态栏：分支 / 模型 / 思考强度 / 上下文 / 用量 / 光标位置 / 语言 / 换行符
+```
+
+拖动分隔线可调宽窄；双击分隔线复位；`Ctrl+B` 收起侧边栏，`Ctrl+Alt+B` 收起聊天，`Ctrl+Alt+M` 让聊天占满窗口。
+
+### 3.2 聊天面板（核心）
+
+**多会话 / 多开**
+
+- 聊天面板顶部 `+` 新建聊天标签，每个标签 = 一个独立 `pi` 进程、独立会话文件、独立模型/思考强度；
+- 标签上的小圆点：蓝=运行中，黄=等待你确认，绿=结束时你有未读，红=进程出错；
+- 多个标签可同时跑任务，切走继续跑，结束时系统通知；
+- 需要彻底并行（不同项目）时：`Ctrl+Shift+N` 新窗口，同一项目重复打开会聚焦已有窗口。
+
+**输入框**
+
+| 操作 | 效果 |
+|---|---|
+| `Enter` | 发送；Agent 正在运行时为「插入引导（steer）」，在当前回合工具执行完后生效 |
+| `Alt+Enter` | follow-up：等 Agent 完全做完再执行 |
+| `Shift+Enter` | 换行 |
+| `Esc` | 中止当前任务（会把你排队的消息取回输入框） |
+| `Alt+↑` | 把排队中的消息取回输入框 |
+| `@` | 选文件/文件夹作为上下文（文件内容以 `<file>` 块内联，文件夹以 `@路径/` 提及） |
+| `/` | 命令、提示模板、技能 |
+| `!cmd` / `!!cmd` | 运行 shell，`!` 把输出加入模型上下文，`!!` 不加入 |
+| `↑` / `↓` | 浏览历史输入 |
+| 拖拽文件 / 粘贴截图 | 变成上下文（图片作为附件发给模型） |
+
+输入框左下三个胶囊：**模式**（Agent / Ask）、**模型**、**思考强度**；右侧圆环是上下文占用（点它等于 `/compact`）。顶部会显示「添加上下文」chip，可单个删除。
+
+**Agent / Ask 模式**
+
+- `Agent`：完整工具（read/bash/edit/write…），可改文件、跑命令；
+- `Ask`：只挂只读工具（read/grep/find/ls），只回答问题不改代码；
+- 切换：点模式胶囊或 `Ctrl+.`；「运行编辑/命令类工具前询问」也在同一个菜单里 —— 打开后 edit/write/bash 调用会先在聊天里出现「运行 / 拒绝」按钮（Cursor 的 approve 体验）。
+
+**消息操作**
+
+- 用户消息悬停：复制、**编辑并重新发送**（从该点开新分支，原对话保留）、**恢复检查点**、分叉为新会话、打标签；
+- 助手消息悬停：复制、重新生成（同样走分支）；
+- 思考块可折叠；工具调用卡片可展开，`edit`/`write` 直接显示带行号的红绿 diff，`bash` 显示命令与输出，点击文件路径可跳到编辑器对应行；
+- 顶部的「已处理」类提示：模型切换、上下文压缩摘要、分支摘要、扩展消息都可展开查看。
+
+**改动审阅（Cursor 式 Review）**
+
+Agent 每次修改文件都会在输入框上方累出一条 **“N 个文件已更改 +x −y”**：
+
+- 点文件名 → 打开「修改前 ↔ 当前」的 Monaco 差异视图（可并排/内联切换）；
+- 单文件“撤销”或“全部撤销” → 恢复到 Agent 修改前的原文（新建的文件会被删除）；
+- “全部保留” → 清空审阅列表（不回滚内容）；
+- 每条用户消息上的 **恢复检查点** 可以撤销“这条消息之后 Agent 做过的所有文件修改”，再配合“编辑并重新发送”就等于 Cursor 的「回滚并改写」。
+
+**会话级操作**（聊天面板右上 `…`，或斜杠命令）
+
+| 命令 | 说明 |
+|---|---|
+| `/tree` | 会话树面板：查看所有分支，跳到任意节点（离开的分支可选择生成摘要），`L` 给节点打标签 |
+| `/fork` | 从某条历史用户消息分叉出**新会话**（新标签） |
+| `/clone` | 复制当前会话 |
+| `/compact [指令]` | 压缩上下文，可附加“重点保留什么” |
+| `/name` | 重命名会话（历史列表里显示） |
+| `/session` | 会话信息：文件、ID、消息数、token、费用、自动压缩/重试开关 |
+| `/export` | 导出 HTML 或 JSONL |
+| `/share` | 导出并上传为私有 GitHub Gist（需要 `gh` 已登录），给出 pi.dev 预览链接 |
+| `/import` | 导入 JSONL 会话 |
+| `/copy` | 复制最后一条回复 |
+| `/tools` | 勾选暴露给模型的工具（会话级） |
+| `/system-prompt` | 查看当前系统提示词 |
+| `/reload` | 重载扩展、技能、提示模板、上下文文件 |
+| `/model`、`/thinking` | 选模型 / 设思考强度（`Ctrl+L`、`Shift+Tab` 也能） |
+| `/login`、`/logout` | 配置 / 移除提供商凭据 |
+| `/trust` | 项目信任决策 |
+| `/tui` | 在集成终端里用 pi 自带 TUI 打开当前会话（需要 TUI 专属功能时用，如 `/bug`） |
+| `/hotkeys`、`/changelog`、`/settings`、`/debug` | 快捷键、更新日志、设置、pi 进程日志 |
+
+> 扩展 / 提示模板 / 技能注册的命令（`get_commands` 返回的）会原样发给 pi 执行，`/` 补全里也能看到。
+
+**会话历史**：活动栏「会话」图标 → 当前项目的历史会话（可切到全部项目），支持搜索、重命名、删除、在 TUI 中打开、导出。
+
+### 3.3 编辑器
+
+- Monaco（VS Code 同款）：多标签、预览标签（单击预览，双击固定）、拖拽排序、`Ctrl+P` 按名搜索、`Ctrl+Shift+F` 全项目搜索（ripgrep）、保存时自动处理 BOM/行尾，磁盘被外部修改会提示冲突/自动重载；
+- 图片（png/jpg/gif/webp…）直接在标签里预览，点一下放大；Markdown 有源码/预览切换；二进制/超大文件提示用系统程序打开；
+- **`Ctrl+L`**：把当前选区（或当前行）加入聊天上下文；
+- **`Ctrl+K`**：对选区发起内联编辑请求（会生成“只改这段代码”的提示并带上行号范围）；
+- 右键菜单还有「将选区添加到聊天」「在新聊天中讨论」「解释选中代码」「修复选中问题」「与 Git HEAD 比较」；
+- Agent 改文件时，已打开的标签会自动同步（未保存的改动不会被覆盖）。
+
+### 3.4 终端 / 源代码管理 / 设置
+
+- **终端**（`Ctrl+J`，`Ctrl+Shift+`` 新建）：PowerShell 7 / Windows PowerShell / cmd / Git Bash / WSL 任选（右上角下拉，可设默认）；支持 `Ctrl+C/V`（有选区时复制）、右键菜单、多终端列表。终端面板的「输出 (pi)」页签显示每个 pi 进程的 stderr 日志，排查启动问题用。
+- **源代码管理**（`Ctrl+Shift+G`）：提交信息框（`Ctrl+Enter` 提交，旁边 ✨ 让 Agent 生成提交信息）、暂存/取消暂存/放弃更改、点击文件看 HEAD ↔ 工作区 diff、分支切换、同步（pull & push）。
+- **设置**（`Ctrl+,`）：
+  - *Pi Desktop*：主题、字号、发送快捷键、默认模式与工具确认、通知、自动保存、小地图、默认终端；
+  - *Pi 设置*：图形化编辑 `settings.json`（用户 / 项目两栏，带默认值提示），覆盖模型默认值、压缩、重试、代理、默认工具、资源路径、信任策略等；
+  - *提供商与登录*：管理 `auth.json` 里的 API Key（支持 `!命令` 形式从密码管理器读取）；OAuth/订阅登录给了一个“在 Pi TUI 里跑 `/login`”的入口；
+  - *模型*：列出可用模型，勾选进入循环范围，一键设为默认；
+  - *配置文件*：一键打开 `settings.json` / `models.json` / `mcp.json` / `AGENTS.md` / 扩展与技能目录，MCP 与 Pi 包管理也给了 `pi mcp list` / `pi install` 的终端入口；
+  - *运行环境*：显示并允许指定 pi CLI 与 Node 路径（找不到 pi 时会自动弹出这个引导）。
+
+### 3.5 快捷键
+
+| 快捷键 | 功能 | 快捷键 | 功能 |
+|---|---|---|---|
+| `Ctrl+I` | 聚焦聊天 | `Ctrl+N` | 新建聊天 |
+| `Ctrl+Alt+B` | 显示/隐藏聊天 | `Ctrl+Alt+M` | 聊天最大化 |
+| `Ctrl+Shift+N` | 新窗口 | `Ctrl+O` | 打开文件夹 |
+| `Ctrl+R` | 最近文件夹 | `Ctrl+P` | 按名打开文件（`>` 命令，`:` 行号，`#` 文本搜索） |
+| `Ctrl+Shift+P` | 命令面板 | `Ctrl+Shift+F` | 全项目搜索 |
+| `Ctrl+Shift+E` | 资源管理器 | `Ctrl+Shift+G` | 源代码管理 |
+| `Ctrl+B` | 侧边栏 | `Ctrl+J` | 终端面板 |
+| `Ctrl+S` / `Ctrl+Alt+S` | 保存 / 全部保存 | `Ctrl+W` | 关闭编辑器 |
+| `Ctrl+Tab` | 切换编辑器 | `Ctrl+Alt+]` / `[` | 切换聊天标签 |
+| `Ctrl+K` | 内联编辑选区 | `Ctrl+L` | 选区加入聊天（编辑器）/ 选模型（聊天框） |
+| `Ctrl+.` | 切换 Agent/Ask 模式 | `Shift+Tab` | 循环思考强度 |
+| `Enter` / `Alt+Enter` | 发送 / follow-up | `Esc` | 中止 |
+| `Ctrl+Shift+R` | 重载窗口 | `Ctrl+Shift+Backspace` | 中止 Agent |
+| `Ctrl+O` | 打开文件夹（焦点在聊天框内时= 展开/折叠工具输出） | `Ctrl+,` | 设置 |
+
+### 3.6 项目信任
+
+如果项目里有 `.pi/settings.json`、`.pi/extensions`、`.pi/skills`、`.pi/mcp.json` 等资源，首次打开会弹「信任此项目？」（因为 RPC 模式无法显示 pi 自己的信任提示，桌面端代替它询问）。选择「始终信任」会写入 `~/.pi/agent/trust.json`，与命令行 pi 共享；也可随时用 `/trust` 修改。不信任时项目资源不会加载，聊天里会有一条黄色提示。
+
+---
+
+## 四、常见问题
 
 | 现象 | 处理 |
-| --- | --- |
-| 提示「未找到 pi CLI」 | `npm install -g @earendil-works/pi-coding-agent`，或在「设置 → 运行时」里填 pi 路径 |
-| 提示 Node 版本过低 / 子进程行为异常 | 安装 Node ≥ 22.19 并在设置里指定 `node.exe` |
-| 终端空白 / 报 conpty 错误 | 需要 Windows 10 1809+；确认 `resources/app/node_modules/node-pty/prebuilds/win32-x64/` 完整 |
-| 打包后白屏 | 检查是否误开了 asar（`resources/app` 应为目录）、`resources/app/renderer` 与 `node_modules` 是否存在 |
-| 打包后 exe 图标/名称没变 | rcedit 步骤未执行，或图标不是多尺寸 `.ico` |
-| 首次运行未保存布局 | 布局/窗口状态存在 `%APPDATA%\Pi Desktop\config.json`，删除该文件可重置 |
+|---|---|
+| 启动提示“未找到 pi” | `npm install -g @earendil-works/pi-coding-agent`；或设置 → 运行环境 → 指定 `pi CLI 路径`（可指向 `...\pi-coding-agent` 包目录或 `dist\bundle\cli.js`） |
+| 模型列表为空 | 设置 → 提供商与登录 添加 API Key，或设置环境变量（如 `ANTHROPIC_API_KEY`），或在 `~/.pi/agent/models.json` 配自定义端点；也可在聊天里 `/login` |
+| `bash` 工具报找不到 shell | 装 Git for Windows；桌面端会自动把 Git 的 `bin` 目录补进 pi 子进程 PATH，也可以在 `settings.json` 里设 `shellPath` |
+| 终端里中文/颜色异常 | 终端右上角换成 PowerShell 7 或 Git Bash；`TERM=xterm-256color` 已自动设置 |
+| 会话没出现在历史里 | 历史列表默认只看当前项目；点地球图标切到“所有项目” |
+| 想回到某次改动之前 | 该用户消息 →「恢复检查点」（撤销文件改动）；或 `/tree` 跳回该节点 |
+| 界面显示异常 | `Ctrl+Shift+R` 重载窗口；仍异常时设 `PI_DESKTOP_DEVTOOLS=1` 启动看控制台 |
+| 想彻底重置桌面端 | 关闭客户端，删除 `%APPDATA%\Pi Desktop\`（不影响 pi 的 `~/.pi`） |
+
+## 五、实现要点（给二次开发）
+
+- **通信**：主进程为每个聊天标签 `spawn` 一个 `pi --mode rpc -e main/desktop-extension.js`，用严格 LF 分帧的 JSONL 收发；`pi-session.js` 负责请求/响应关联、事件转发、按需 `get_entries` 增量同步、崩溃重连。
+- **状态重建**：渲染层 `session.js` 只用「持久化 entries + 实时事件」重建对话视图（流式 delta、工具调用、队列、压缩/重试状态都来自事件），因此可以和 TUI 同时读写同一会话文件。
+- **协议未覆盖的能力**：`/tree` 跳转、打标签、工具开关、`/reload`、系统提示词读取、工具调用确认，都通过注入的 `desktop-extension.js` 暴露成 `/__desktop <op> <json>` 命令，结果用带标记的 `notify` 回传。
+- **安全**：渲染进程 `contextIsolation: true`、`sandbox: true`、无 `nodeIntegration`；所有能力经 `preload.js` 白名单暴露；Markdown 渲染走 DOMPurify；`pidesk://` 协议只允许读应用目录与显式传入的绝对路径文件。
+
+## 六、许可
+
+本项目代码为 MIT。随附的第三方组件：Electron（MIT）、Monaco Editor（MIT）、xterm.js（MIT）、node-pty（MIT）、marked（MIT）、DOMPurify（Apache-2.0 / MPL-2.0）、@vscode/codicons（CC BY 4.0）；pi 本身（`@earendil-works/pi-coding-agent`）按其自身许可使用，本客户端不重新分发 pi。
