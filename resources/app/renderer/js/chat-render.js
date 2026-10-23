@@ -190,11 +190,28 @@ function renderThinking(item, view) {
       view.refresh();
     } }, icon(open ? 'chevron-down' : 'chevron-right'), item.streaming ? h('span.pulse', '思考中…') : h('span', b.redacted && !b.thinking ? '思考（已加密）' : `已思考 · ${words} 字`)),
     h('div.th-body.selectable', b.thinking || ''));
-  if (item.streaming) {
-    const body = el.querySelector('.th-body');
-    requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
-  }
+  const body = el.querySelector('.th-body');
+  // 记录用户是否停留在思考框底部：向上翻阅时不再被强制拉到底
+  body.addEventListener('scroll', () => { body._pinned = body.scrollHeight - body.scrollTop - body.clientHeight < 8; });
   return el;
+}
+
+// 流式思考块的原地更新：只改文字，不重建节点，避免滚动位置归零与动画重置造成闪烁
+export function updateThinking(el, item) {
+  const body = el.querySelector('.th-body');
+  if (!body) return;
+  const text = item.block.thinking || '';
+  if (body.firstChild && body.firstChild.nodeType === 3) {
+    if (body.firstChild.data !== text) body.firstChild.data = text;
+  } else if (body.textContent !== text) {
+    body.textContent = text;
+  }
+}
+
+// 节点已挂载后同步滚到思考框底部（用户手动上翻时不打扰）
+export function pinThinking(el) {
+  const body = el.querySelector('.th-body');
+  if (body && body._pinned !== false) body.scrollTop = body.scrollHeight;
 }
 
 function renderAssistantFoot(item, view) {

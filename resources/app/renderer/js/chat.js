@@ -3,7 +3,7 @@
 import { api, h, icon, iconBtn, clear, basename, relative, resolveIn, textOfContent, fmtTokens, fmtCost, fmtTime, truncate, throttleRaf, samePath, uid, append } from './util.js';
 import { modal, confirm, prompt as promptBox, editorPrompt, quickPick, contextMenu, toast, alertBox } from './ui.js';
 import { ChatSession, stripFileBlocks } from './session.js';
-import { buildItems, renderItem } from './chat-render.js';
+import { buildItems, renderItem, updateThinking, pinThinking } from './chat-render.js';
 import { Composer, BUILTIN_COMMANDS } from './composer.js';
 import { mdHooks, renderMarkdown, copyText } from './markdown.js';
 
@@ -34,11 +34,18 @@ export class ChatPane {
     this.composer = new Composer(this);
     this.body = h('div.chat-body', this.scroll, this.jump);
     this.el.append(this.header, this.body, this.status, this.widgetsAbove, this.queueBox, this.review, this.composer.el, this.composer.hint, this.widgetsBelow);
+    this.pinToken = 0;
+    this.pinning = false; // 强制滚底的短暂窗口内，忽略由内容重排产生的 scroll 事件，避免 stick 被误清
     this.scroll.addEventListener('scroll', () => {
+      if (this.pinning) return;
       const near = this.scroll.scrollHeight - this.scroll.scrollTop - this.scroll.clientHeight < 40;
       this.stick = near;
       this.jump.classList.toggle('hidden', near);
     });
+    // 内容在滚底之后继续变高（图片解码、代码块等）时，保持贴底
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(() => { if (this.stick) this.scroll.scrollTop = this.scroll.scrollHeight; }).observe(this.list);
+    }
     this.refreshSoon = throttleRaf(() => this.refresh());
     this.statusTimer = setInterval(() => { if (this.current && (this.current.running || this.current.retry)) this.renderStatus(); }, 1000);
     this.reviewCollapsed = false;
@@ -64,7 +71,7 @@ export class ChatPane {
     const approve = await this.wb.resolveTrust();
     if (approve === 'cancel') return null;
     const s = new ChatSession({ sessionFile, title, approve: approve === undefined ? undefined : approve, mode: this.wb.config.defaultMode || 'agent', approval: this.wb.config.approval || 'auto' });
-    s.view = { toolExpand: new Map(), thinkingOpen: new Set(), noteOpen: new Set(), userOpen: new Set(), editingKey: null, scrollTop: null };
+    s.view = { toolExpand: new Map(), thinkingOpen: new Set(), noteOpen: new Set(), userOpen: new Set(), editingKey: null };
     this.wire(s);
     this.sessions.push(s);
     if (activate) this.activate(s);
@@ -114,7 +121,6 @@ export class ChatPane {
     if (this.current === s) return;
     if (this.current) {
       this.drafts.set(this.current.key, this.composer.serializeDraft());
-      this.current.view.scrollTop = this.stick ? null : this.scroll.scrollTop;
     }
     this.current = s;
     s.unread = false;
@@ -129,8 +135,7 @@ export class ChatPane {
     this.renderWidgets();
     this.composer.renderBar();
     this.wb.statusbar.render();
-    if (s.view.scrollTop === null || s.view.scrollTop === undefined) this.scrollToBottom(true);
-    else this.scroll.scrollTop = s.view.scrollTop;
+    this.scrollToBottom(true); // 进入聊天固定定位到最底部
     this.wb.saveState();
   }
 
@@ -234,14 +239,21 @@ export class ChatPane {
       keep.add(item.key);
       let node = this.nodes.get(item.key);
       if (!node || node.sig !== item.sig) {
-        const el = renderItem(item, view);
-        if (node) node.el.replaceWith(el);
-        node = { el, sig: item.sig };
-        this.nodes.set(item.key, node);
+        if (node && item.kind === 'thinking' && node.kind === 'thinking' && node.streaming && item.streaming) {
+          // 流式思考：原地更新文字，不重建节点
+          updateThinking(node.el, item);
+          node.sig = item.sig;
+        } else {
+          const el = renderItem(item, view);
+          if (node) node.el.replaceWith(el);
+          node = { el, sig: item.sig, kind: item.kind, streaming: !!item.streaming };
+          this.nodes.set(item.key, node);
+        }
       }
       const expectedNext = prev ? prev.nextSibling : this.list.firstChild;
       if (node.el !== expectedNext) this.list.insertBefore(node.el, expectedNext);
       prev = node.el;
+      if (item.kind === 'thinking' && item.streaming) pinThinking(node.el);
     }
     for (const [k, node] of this.nodes) {
       if (!keep.has(k)) {
@@ -254,10 +266,28 @@ export class ChatPane {
   }
 
   scrollToBottom(force) {
-    if (force) this.stick = true;
-    requestAnimationFrame(() => {
+    const apply = () => {
       if (this.stick) this.scroll.scrollTop = this.scroll.scrollHeight;
       this.jump.classList.add('hidden');
+    };
+    if (!force) {
+      requestAnimationFrame(apply);
+      return;
+    }
+    this.stick = true;
+    this.pinning = true;
+    const token = ++this.pinToken;
+    apply(); // 同步滚一次，随后两帧再补滚，覆盖异步布局
+    requestAnimationFrame(() => {
+      if (token !== this.pinToken) return;
+      this.stick = true;
+      apply();
+      requestAnimationFrame(() => {
+        if (token !== this.pinToken) return;
+        this.stick = true;
+        apply();
+        this.pinning = false;
+      });
     });
   }
 
